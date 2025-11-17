@@ -51,9 +51,12 @@ def generate_windows(fasta_path, window, step, out_fa):
     return out_fa
 
 # ---------- Fast search (risearch wrapper) ----------
-def call_risearch(query_fa, target_fa, out_tsv, energy_cutoff=-6.0, max_hits=1000):
+def call_risearch(query_fa, target_fa, out_tsv, energy_cutoff=-6.0, max_hits=1000, risearch_bin=None):
+    """Run RiSearch2 using the provided binary path or default 'risearch2' in the same folder."""
+    if risearch_bin is None:
+        risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
     cmd = [
-        "risearch2",
+        risearch_bin,
         "-q", str(query_fa),
         "-t", str(target_fa),
         "--energy-cutoff", str(energy_cutoff),
@@ -105,11 +108,14 @@ def extract_contexts(target_fa, hits_df, flank, out_dir):
     return pd.DataFrame(rows)
 
 # ---------- Rescore with IntaRNA ----------
-def call_intarna(query_fa, target_context_fa, out_prefix, threads=1):
+def call_intarna(query_fa, target_context_fa, out_prefix, threads=1, intarna_bin=None):
+    """Run IntaRNA using the provided binary path or default 'IntaRNA' in the same folder."""
+    if intarna_bin is None:
+        intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
     out_prefix = str(out_prefix)
     out_csv = out_prefix + ".csv"
     cmd = [
-        "IntaRNA",
+        intarna_bin,
         "--query", str(query_fa),
         "--target", str(target_context_fa),
         "--outMode", "C",
@@ -216,6 +222,7 @@ def tune_windows(config):
         win_fa = tmp_dir / f"windows_w{w}.fa"
         generate_windows(geneA, w, step, win_fa)
         fast_out = tmp_dir / f"risearch_w{w}.tsv"
+        # use local binary
         call_risearch(win_fa, geneB, fast_out, energy_cutoff=energy_cutoff_fast, max_hits=100000)
         try:
             hits_df = parse_risearch_tsv(fast_out)
