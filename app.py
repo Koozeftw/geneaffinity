@@ -2,8 +2,9 @@ import streamlit as st
 import os
 import tempfile
 from datetime import datetime
-from pipeline_runner import run_pipeline  # import the backend runner function
+from pipeline_runner import run_pipeline  # updated runner with local binaries
 
+# --- Streamlit page config ---
 st.set_page_config(page_title="FASTA Binding Pipeline", layout="wide")
 st.title("FASTA Binding Pipeline 🔬")
 st.write("Upload your sequences and run the pipeline to find potential binding regions.")
@@ -27,10 +28,9 @@ if st.button("Run Pipeline"):
         st.error("Please upload both Sequence A and Sequence B.")
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Save uploaded files
             pathA = os.path.join(tmpdir, fileA.name)
             pathB = os.path.join(tmpdir, fileB.name)
-
-            # Save uploaded files
             with open(pathA, "wb") as f:
                 f.write(fileA.getbuffer())
             with open(pathB, "wb") as f:
@@ -39,12 +39,11 @@ if st.button("Run Pipeline"):
             st.info("Running pipeline...")
             log_window = st.empty()  # live log placeholder
 
-            # Define paths to binaries in bin/ folder
-            bin_dir = os.path.join(os.path.dirname(__file__), "bin")
-            risearch_bin = os.path.join(bin_dir, "risearch2")
-            intarna_bin = os.path.join(bin_dir, "IntaRNA")
+            # Define local binaries
+            risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
+            intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
 
-            # Run the backend pipeline function
+            # Run pipeline
             try:
                 results_df = run_pipeline(
                     geneA_path=pathA,
@@ -57,11 +56,12 @@ if st.button("Run Pipeline"):
                     threads=threads,
                     risearch_bin=risearch_bin,
                     intarna_bin=intarna_bin,
-                    log_callback=lambda msg: log_window.text(msg)
+                    log_callback=lambda msg: log_window.text(msg)  # live logging
                 )
+
                 st.success("Pipeline finished!")
 
-                # Download results
+                # Download results as CSV
                 csv_data = results_df.to_csv(index=False)
                 st.download_button(
                     label="⬇️ Download Results CSV",
