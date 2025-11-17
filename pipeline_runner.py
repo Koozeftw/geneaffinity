@@ -1,153 +1,87 @@
-import os
+import streamlit as st
 import subprocess
-import pandas as pd
-from pathlib import Path
-from pipeline import generate_windows, parse_risearch_tsv, extract_contexts, call_intarna, aggregate_and_rank
-import shutil
-import urllib.request
-import stat
+import os
+from datetime import datetime
+import tempfile
 
-# ============================
-# Helper: download binaries
-# ============================
+st.set_page_config(page_title="FASTA Binding Pipeline", layout="wide")
 
-def download_binary(url, dest_path):
-    if dest_path.exists():
-        return
-    print(f"Downloading {url} → {dest_path}")
-    urllib.request.urlretrieve(url, dest_path)
-    # Make it executable
-    st = os.stat(dest_path)
-    os.chmod(dest_path, st.st_mode | stat.S_IEXEC)
+st.title("FASTA Binding Pipeline 🔬")
+st.write("Upload your sequences and run the pipeline to find potential binding regions.")
 
-# ============================
-# Check and setup binaries
-# ============================
+# --- File uploads ---
+fileA = st.file_uploader("Upload Sequence A (FASTA)", type=["fa", "fasta"])
+fileB = st.file_uploader("Upload Sequence B (FASTA)", type=["fa", "fasta"])
 
-def setup_risearch2(tmp_dir, log_callback=print):
-    risearch_path = tmp_dir / "risearch2"
-    if shutil.which("risearch2"):
-        log_callback("✅ Found system risearch2")
-        return shutil.which("risearch2")
-    
-    # Otherwise, attempt download
-    log_callback("⚠️ risearch2 not found. Attempting to download precompiled binary...")
-    # Example URL (replace with actual working precompiled binary URL)
-    url = "https://example.com/risearch2_linux_x86_64"
-    try:
-        download_binary(url, risearch_path)
-        return str(risearch_path)
-    except Exception as e:
-        log_callback(f"❌ Failed to get risearch2: {e}")
-        return None
+# --- Pipeline parameters ---
+st.sidebar.header("Pipeline Parameters")
+window = st.sidebar.number_input("Window Size", min_value=1, value=35)
+step = st.sidebar.number_input("Step Size", min_value=1, value=5)
+energy_cutoff = st.sidebar.number_input("Energy Cutoff", value=-10.0, format="%.2f")
+threads = st.sidebar.number_input("Threads", min_value=1, value=1)
 
-def setup_intarna(tmp_dir, log_callback=print):
-    intarna_path = tmp_dir / "IntaRNA"
-    if shutil.which("IntaRNA"):
-        log_callback("✅ Found system IntaRNA")
-        return shutil.which("IntaRNA")
-    
-    # Otherwise, attempt download
-    log_callback("⚠️ IntaRNA not found. Attempting to download precompiled binary...")
-    # Example URL (replace with actual working precompiled binary URL)
-    url = "https://example.com/IntaRNA_linux_x86_64"
-    try:
-        download_binary(url, intarna_path)
-        return str(intarna_path)
-    except Exception as e:
-        log_callback(f"❌ Failed to get IntaRNA: {e}")
-        return None
-
-# ============================
-# Main pipeline runner
-# ============================
-
-def run_pipeline(
-    geneA_path,
-    geneB_path,
-    window_sizes=[35],
-    step=5,
-    flank=100,
-    energy_cutoff_fast=-6.0,
-    top_k_per_window=100,
-    threads=1,
-    log_callback=print
-):
-    tmp_dir = Path("tmp")
-    tmp_dir.mkdir(exist_ok=True)
-
-    # Setup binaries
-    risearch2_bin = setup_risearch2(tmp_dir, log_callback)
-    intarna_bin = setup_intarna(tmp_dir, log_callback)
-
-    results_all = []
-
-    for w in window_sizes:
-        log_callback(f"=== Running window size {w} ===")
-        # 1️⃣ Generate windows
-        win_fa = tmp_dir / f"windows_w{w}.fa"
-        generate_windows(geneA_path, w, step, win_fa)
-
-        # 2️⃣ Fast search
-        fast_out = tmp_dir / f"risearch_w{w}.tsv"
-        if risearch2_bin:
-            try:
-                cmd = [
-                    risearch2_bin,
-                    "-q", str(win_fa),
-                    "-t", str(geneB_path),
-                    "--energy-cutoff", str(energy_cutoff_fast),
-                    "--max-hits", str(100000),
-                    "-o", str(fast_out)
-                ]
-                log_callback(f"Running risearch2: {cmd}")
-                subprocess.run(cmd, check=True)
-            except Exception as e:
-                log_callback(f"❌ risearch2 failed: {e}")
-                continue
-        else:
-            log_callback("⚠️ Skipping risearch2 (binary not available). Creating empty hits file.")
-            pd.DataFrame(columns=['query_id','target_id','q_start','q_end','t_start','t_end','energy']).to_csv(fast_out, sep="\t", index=False)
-
-        # 3️⃣ Parse results
-        hits_df = parse_risearch_tsv(fast_out)
-        hits_df = hits_df.sort_values('energy').groupby('query_id').head(top_k_per_window).reset_index(drop=True)
-
-        # 4️⃣ Extract context
-        contexts_dir = tmp_dir / f"contexts_w{w}"
-        contexts_dir.mkdir(exist_ok=True)
-        contexts_df = extract_contexts(geneB_path, hits_df, flank, contexts_dir)
-
-        # 5️⃣ Rescore with IntaRNA
-        intarna_results = []
-        if intarna_bin:
-            for idx, r in contexts_df.iterrows():
-                qid = hits_df.loc[int(r['hit_index']), 'query_id']
-                qtmp = contexts_dir / f"query_{qid}.fa"
-                # write single window query
-                from Bio import SeqIO
-                for rec in SeqIO.parse(win_fa, "fasta"):
-                    if rec.id == qid:
-                        with open(qtmp, "w") as fh:
-                            fh.write(f">{qid}\n{str(rec.seq)}\n")
-                        break
-                out_pref = contexts_dir / f"intarna_{idx}"
-                try:
-                    csvp = call_intarna(qtmp, r['context_fasta'], out_pref, threads=threads)
-                    intarna_results.append((int(r['hit_index']), csvp))
-                except Exception as e:
-                    log_callback(f"❌ IntaRNA failed for {qtmp}: {e}")
-        else:
-            log_callback("⚠️ Skipping IntaRNA (binary not available). Using empty results.")
-            intarna_results = []
-
-        # 6️⃣ Aggregate
-        agg_out = tmp_dir / f"aggregated_w{w}.csv"
-        agg_df = aggregate_and_rank(intarna_results, hits_df, agg_out)
-        if agg_df is not None:
-            results_all.append(agg_df)
-
-    if results_all:
-        return pd.concat(results_all, ignore_index=True)
+# --- Run button ---
+if st.button("Run Pipeline"):
+    if not fileA or not fileB:
+        st.error("Please upload both Sequence A and Sequence B.")
     else:
-        return pd.DataFrame()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pathA = os.path.join(tmpdir, fileA.name)
+            pathB = os.path.join(tmpdir, fileB.name)
+            # Save uploaded files
+            with open(pathA, "wb") as f:
+                f.write(fileA.getbuffer())
+            with open(pathB, "wb") as f:
+                f.write(fileB.getbuffer())
+
+            st.info("Running pipeline...")
+            log_window = st.empty()  # Placeholder for live logs
+
+            # Local binaries
+            risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
+            intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
+
+            cmd = [
+                "python3",
+                "pipeline.py",
+                "fast-search",
+                "--query", pathA,
+                "--target", pathB,
+                "--out", os.path.join(tmpdir, "results_risearch.tsv"),
+                "--energy", str(energy_cutoff),
+                "--max-hits", "1000",
+            ]
+
+            # Export environment variables for local binaries
+            env = os.environ.copy()
+            env["RISEARCH_BIN"] = risearch_bin
+            env["INTARNA_BIN"] = intarna_bin
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env
+            )
+
+            full_log = ""
+            for line in process.stdout:
+                full_log += line
+                log_window.code(full_log)
+
+            process.wait()
+
+            results_path = os.path.join(tmpdir, "results_risearch.tsv")
+            if os.path.exists(results_path):
+                st.success("Pipeline finished!")
+                with open(results_path, "r") as f:
+                    st.download_button(
+                        label="⬇️ Download Results",
+                        data=f.read(),
+                        file_name=f"results_{}.tsv".format(datetime.now().strftime("%Y%m%d_%H%M%S")),
+                        mime="text/plain",
+                    )
+            else:
+                st.error("Pipeline finished but results were not found. Check logs above.")
