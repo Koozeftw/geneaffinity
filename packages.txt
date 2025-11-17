@@ -7,5 +7,3 @@ libtool
 pkg-config
 zlib1g-dev
 libgsl-dev
-# Install IntaRNA and RiSearch2 from source if not in OS packages
-
