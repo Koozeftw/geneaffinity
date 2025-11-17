@@ -39,6 +39,11 @@ if st.button("Run Pipeline"):
             st.info("Running pipeline...")
             log_window = st.empty()  # live log placeholder
 
+            # Define paths to binaries in bin/ folder
+            bin_dir = os.path.join(os.path.dirname(__file__), "bin")
+            risearch_bin = os.path.join(bin_dir, "risearch2")
+            intarna_bin = os.path.join(bin_dir, "IntaRNA")
+
             # Run the backend pipeline function
             try:
                 results_df = run_pipeline(
@@ -50,6 +55,8 @@ if st.button("Run Pipeline"):
                     energy_cutoff_fast=energy_cutoff_fast,
                     top_k_per_window=top_k,
                     threads=threads,
+                    risearch_bin=risearch_bin,
+                    intarna_bin=intarna_bin,
                     log_callback=lambda msg: log_window.text(msg)
                 )
                 st.success("Pipeline finished!")
