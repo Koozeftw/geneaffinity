@@ -54,7 +54,7 @@ def generate_windows(fasta_path, window, step, out_fa):
 def call_risearch(query_fa, target_fa, out_tsv, energy_cutoff=-6.0, max_hits=1000, risearch_bin=None):
     """Run RiSearch2 using the provided binary path or default 'risearch2' in the same folder."""
     if risearch_bin is None:
-        risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
+        risearch_bin = os.path.join(os.path.dirname(__file__),"bin", "risearch2")
     cmd = [
         risearch_bin,
         "-q", str(query_fa),
@@ -111,7 +111,7 @@ def extract_contexts(target_fa, hits_df, flank, out_dir):
 def call_intarna(query_fa, target_context_fa, out_prefix, threads=1, intarna_bin=None):
     """Run IntaRNA using the provided binary path or default 'IntaRNA' in the same folder."""
     if intarna_bin is None:
-        intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
+        intarna_bin = os.path.join(os.path.dirname(__file__), "bin", "IntaRNA")
     out_prefix = str(out_prefix)
     out_csv = out_prefix + ".csv"
     cmd = [
