@@ -1,87 +1,121 @@
-import streamlit as st
-import subprocess
 import os
-from datetime import datetime
-import tempfile
+from pathlib import Path
+import pandas as pd
+from pipeline import (
+    generate_windows,
+    call_risearch,
+    extract_contexts,
+    call_intarna,
+    aggregate_and_rank,
+)
+from Bio import SeqIO
 
-st.set_page_config(page_title="FASTA Binding Pipeline", layout="wide")
+def run_pipeline(
+    geneA_path,
+    geneB_path,
+    window_sizes=[35],
+    step=5,
+    flank=100,
+    energy_cutoff_fast=-6.0,
+    top_k_per_window=100,
+    threads=1,
+    risearch_bin=None,
+    intarna_bin=None,
+    log_callback=None,
+):
+    """
+    Run the full RNA-RNA sliding-window binding pipeline.
 
-st.title("FASTA Binding Pipeline 🔬")
-st.write("Upload your sequences and run the pipeline to find potential binding regions.")
+    Parameters
+    ----------
+    geneA_path : str
+        Path to FASTA file for query sequences.
+    geneB_path : str
+        Path to FASTA file for target sequences.
+    window_sizes : list[int]
+        List of window sizes to use.
+    step : int
+        Step size for sliding window.
+    flank : int
+        Flanking sequence length for rescoring.
+    energy_cutoff_fast : float
+        Energy cutoff for the fast RiSearch stage.
+    top_k_per_window : int
+        Number of top hits per query to rescore.
+    threads : int
+        Number of threads for IntaRNA.
+    risearch_bin : str
+        Path to local RiSearch2 binary.
+    intarna_bin : str
+        Path to local IntaRNA binary.
+    log_callback : callable
+        Optional function to log progress messages (e.g., Streamlit).
+    """
 
-# --- File uploads ---
-fileA = st.file_uploader("Upload Sequence A (FASTA)", type=["fa", "fasta"])
-fileB = st.file_uploader("Upload Sequence B (FASTA)", type=["fa", "fasta"])
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+        else:
+            print(msg)
 
-# --- Pipeline parameters ---
-st.sidebar.header("Pipeline Parameters")
-window = st.sidebar.number_input("Window Size", min_value=1, value=35)
-step = st.sidebar.number_input("Step Size", min_value=1, value=5)
-energy_cutoff = st.sidebar.number_input("Energy Cutoff", value=-10.0, format="%.2f")
-threads = st.sidebar.number_input("Threads", min_value=1, value=1)
+    if risearch_bin is None:
+        risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
+    if intarna_bin is None:
+        intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
 
-# --- Run button ---
-if st.button("Run Pipeline"):
-    if not fileA or not fileB:
-        st.error("Please upload both Sequence A and Sequence B.")
-    else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            pathA = os.path.join(tmpdir, fileA.name)
-            pathB = os.path.join(tmpdir, fileB.name)
-            # Save uploaded files
-            with open(pathA, "wb") as f:
-                f.write(fileA.getbuffer())
-            with open(pathB, "wb") as f:
-                f.write(fileB.getbuffer())
+    all_results = []
 
-            st.info("Running pipeline...")
-            log_window = st.empty()  # Placeholder for live logs
+    for w in window_sizes:
+        log(f"=== Window size {w} ===")
 
-            # Local binaries
-            risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
-            intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
+        # 1️⃣ Generate windows for geneA
+        win_fa = Path(f"tmp_windows_w{w}.fa")
+        generate_windows(geneA_path, w, step, win_fa)
+        log(f"Generated {len(list(SeqIO.parse(win_fa, 'fasta')))} windows for geneA.")
 
-            cmd = [
-                "python3",
-                "pipeline.py",
-                "fast-search",
-                "--query", pathA,
-                "--target", pathB,
-                "--out", os.path.join(tmpdir, "results_risearch.tsv"),
-                "--energy", str(energy_cutoff),
-                "--max-hits", "1000",
-            ]
+        # 2️⃣ Fast search with RiSearch2
+        risearch_out = Path(f"tmp_risearch_w{w}.tsv")
+        call_risearch(win_fa, geneB_path, risearch_out, energy_cutoff=energy_cutoff_fast, max_hits=100000, risearch_bin=risearch_bin)
+        log(f"RiSearch2 completed. Output: {risearch_out}")
 
-            # Export environment variables for local binaries
-            env = os.environ.copy()
-            env["RISEARCH_BIN"] = risearch_bin
-            env["INTARNA_BIN"] = intarna_bin
+        # 3️⃣ Parse hits and select top K per query
+        hits_df = pd.read_csv(risearch_out, sep="\t", comment="#")
+        hits_df = hits_df.sort_values("energy").groupby("query_id").head(top_k_per_window).reset_index(drop=True)
+        log(f"Selected top {top_k_per_window} hits per query.")
 
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env
-            )
+        # 4️⃣ Extract contexts with flanking regions
+        contexts_dir = Path(f"tmp_contexts_w{w}")
+        contexts_dir.mkdir(parents=True, exist_ok=True)
+        contexts_df = extract_contexts(geneB_path, hits_df, flank, contexts_dir)
+        log(f"Extracted {len(contexts_df)} context sequences with flank={flank}.")
 
-            full_log = ""
-            for line in process.stdout:
-                full_log += line
-                log_window.code(full_log)
+        # 5️⃣ Rescore with IntaRNA
+        intarna_results = []
+        for idx, row in contexts_df.iterrows():
+            qid = hits_df.loc[int(row["hit_index"]), "query_id"]
+            tmp_query_fa = contexts_dir / f"tmp_query_{qid}.fa"
 
-            process.wait()
+            # extract query sequence
+            for rec in SeqIO.parse(win_fa, "fasta"):
+                if rec.id == qid:
+                    with open(tmp_query_fa, "w") as fh:
+                        fh.write(f">{rec.id}\n{str(rec.seq)}\n")
+                    break
 
-            results_path = os.path.join(tmpdir, "results_risearch.tsv")
-            if os.path.exists(results_path):
-                st.success("Pipeline finished!")
-                with open(results_path, "r") as f:
-                    st.download_button(
-                        label="⬇️ Download Results",
-                        data=f.read(),
-                        file_name=f"results_{}.tsv".format(datetime.now().strftime("%Y%m%d_%H%M%S")),
-                        mime="text/plain",
-                    )
-            else:
-                st.error("Pipeline finished but results were not found. Check logs above.")
+            out_pref = contexts_dir / f"intarna_{idx}"
+            csv_file = call_intarna(tmp_query_fa, row["context_fasta"], out_pref, threads=threads, intarna_bin=intarna_bin)
+            intarna_results.append((int(row["hit_index"]), csv_file))
+            log(f"IntaRNA rescoring done for hit {idx}")
+
+            # clean up temporary query file
+            tmp_query_fa.unlink(missing_ok=True)
+
+        # 6️⃣ Aggregate & rank results
+        aggregated_df = aggregate_and_rank(intarna_results, hits_df, contexts_dir / f"aggregated_w{w}.csv")
+        log(f"Aggregated results written for window {w}.")
+
+        all_results.append(aggregated_df)
+
+    final_df = pd.concat(all_results, ignore_index=True)
+    log("Pipeline finished successfully.")
+    return final_df
