@@ -40,7 +40,7 @@ if st.button("Run Pipeline"):
             log_window = st.empty()  # live log placeholder
 
             # Define local binaries
-            vienna_bin = os.path.join(os.path.dirname(__file__), "RNAduplex")
+            vienna_bin = "/Users/colekuznitz/miniforge3/bin/RNAduplex"
             intarna_bin = "/Users/colekuznitz/miniforge3/bin/IntaRNA"
 
 
