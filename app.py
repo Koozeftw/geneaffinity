@@ -41,7 +41,8 @@ if st.button("Run Pipeline"):
 
             # Define local binaries
             vienna_bin = os.path.join(os.path.dirname(__file__), "RNAduplex")
-            intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
+            intarna_bin = "/Users/colekuznitz/miniforge3/bin/IntaRNA"
+
 
             # Run pipeline
             try:
