@@ -34,7 +34,7 @@ def run_pipeline(
             print(msg)
 
     if intarna_bin is None:
-        intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
+        intarna_bin = "/Users/colekuznitz/miniforge3/bin/IntaRNA"
 
     all_results = []
 
