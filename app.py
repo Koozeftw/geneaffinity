@@ -40,7 +40,7 @@ if st.button("Run Pipeline"):
             log_window = st.empty()  # live log placeholder
 
             # Define local binaries
-            risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
+            vienna_bin = os.path.join(os.path.dirname(__file__), "RNAduplex")
             intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
 
             # Run pipeline
@@ -54,7 +54,7 @@ if st.button("Run Pipeline"):
                     energy_cutoff_fast=energy_cutoff_fast,
                     top_k_per_window=top_k,
                     threads=threads,
-                    risearch_bin=risearch_bin,
+                    vienna_bin=vienna_bin,
                     intarna_bin=intarna_bin,
                     log_callback=lambda msg: log_window.text(msg)  # live logging
                 )
@@ -68,6 +68,15 @@ if st.button("Run Pipeline"):
                     data=csv_data,
                     file_name=f"aggregated_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
+                )
+
+                # Download results as Excel
+                excel_data = results_df.to_excel(index=False, engine="openpyxl")
+                st.download_button(
+                    label="⬇️ Download Results Excel",
+                    data=excel_data,
+                    file_name=f"aggregated_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
             except Exception as e:
