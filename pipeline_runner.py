@@ -3,12 +3,13 @@ from pathlib import Path
 import pandas as pd
 from pipeline import (
     generate_windows,
-    call_risearch,
+    call_vienna_fast,          # <-- NEW: replaces call_risearch
     extract_contexts,
     call_intarna,
     aggregate_and_rank,
 )
 from Bio import SeqIO
+
 
 def run_pipeline(
     geneA_path,
@@ -19,37 +20,38 @@ def run_pipeline(
     energy_cutoff_fast=-6.0,
     top_k_per_window=100,
     threads=1,
-    risearch_bin=None,
+    vienna_bin=None,
     intarna_bin=None,
     log_callback=None,
 ):
     """
-    Run the full RNA-RNA sliding-window binding pipeline.
+    Run the full RNA-RNA sliding-window pipeline using ViennaRNA
+    for the fast screen instead of RiSearch.
 
     Parameters
     ----------
     geneA_path : str
-        Path to FASTA file for query sequences.
+        FASTA path for query sequences.
     geneB_path : str
-        Path to FASTA file for target sequences.
+        FASTA path for target sequences.
     window_sizes : list[int]
-        List of window sizes to use.
+        Window sizes to use.
     step : int
         Step size for sliding window.
     flank : int
         Flanking sequence length for rescoring.
     energy_cutoff_fast : float
-        Energy cutoff for the fast RiSearch stage.
+        Energy cutoff for the ViennaRNA fast screen.
     top_k_per_window : int
         Number of top hits per query to rescore.
     threads : int
         Number of threads for IntaRNA.
-    risearch_bin : str
-        Path to local RiSearch2 binary.
+    vienna_bin : str
+        Path to RNAduplex binary.
     intarna_bin : str
-        Path to local IntaRNA binary.
+        Path to IntaRNA binary.
     log_callback : callable
-        Optional function to log progress messages (e.g., Streamlit).
+        Optional callback for logging.
     """
 
     def log(msg):
@@ -58,8 +60,8 @@ def run_pipeline(
         else:
             print(msg)
 
-    if risearch_bin is None:
-        risearch_bin = os.path.join(os.path.dirname(__file__), "risearch2")
+    if vienna_bin is None:
+        vienna_bin = os.path.join(os.path.dirname(__file__), "RNAduplex")
     if intarna_bin is None:
         intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
 
@@ -68,54 +70,6 @@ def run_pipeline(
     for w in window_sizes:
         log(f"=== Window size {w} ===")
 
-        # 1️⃣ Generate windows for geneA
+        # 1️⃣ Generate sliding windows
         win_fa = Path(f"tmp_windows_w{w}.fa")
-        generate_windows(geneA_path, w, step, win_fa)
-        log(f"Generated {len(list(SeqIO.parse(win_fa, 'fasta')))} windows for geneA.")
-
-        # 2️⃣ Fast search with RiSearch2
-        risearch_out = Path(f"tmp_risearch_w{w}.tsv")
-        call_risearch(win_fa, geneB_path, risearch_out, energy_cutoff=energy_cutoff_fast, max_hits=100000, risearch_bin=risearch_bin)
-        log(f"RiSearch2 completed. Output: {risearch_out}")
-
-        # 3️⃣ Parse hits and select top K per query
-        hits_df = pd.read_csv(risearch_out, sep="\t", comment="#")
-        hits_df = hits_df.sort_values("energy").groupby("query_id").head(top_k_per_window).reset_index(drop=True)
-        log(f"Selected top {top_k_per_window} hits per query.")
-
-        # 4️⃣ Extract contexts with flanking regions
-        contexts_dir = Path(f"tmp_contexts_w{w}")
-        contexts_dir.mkdir(parents=True, exist_ok=True)
-        contexts_df = extract_contexts(geneB_path, hits_df, flank, contexts_dir)
-        log(f"Extracted {len(contexts_df)} context sequences with flank={flank}.")
-
-        # 5️⃣ Rescore with IntaRNA
-        intarna_results = []
-        for idx, row in contexts_df.iterrows():
-            qid = hits_df.loc[int(row["hit_index"]), "query_id"]
-            tmp_query_fa = contexts_dir / f"tmp_query_{qid}.fa"
-
-            # extract query sequence
-            for rec in SeqIO.parse(win_fa, "fasta"):
-                if rec.id == qid:
-                    with open(tmp_query_fa, "w") as fh:
-                        fh.write(f">{rec.id}\n{str(rec.seq)}\n")
-                    break
-
-            out_pref = contexts_dir / f"intarna_{idx}"
-            csv_file = call_intarna(tmp_query_fa, row["context_fasta"], out_pref, threads=threads, intarna_bin=intarna_bin)
-            intarna_results.append((int(row["hit_index"]), csv_file))
-            log(f"IntaRNA rescoring done for hit {idx}")
-
-            # clean up temporary query file
-            tmp_query_fa.unlink(missing_ok=True)
-
-        # 6️⃣ Aggregate & rank results
-        aggregated_df = aggregate_and_rank(intarna_results, hits_df, contexts_dir / f"aggregated_w{w}.csv")
-        log(f"Aggregated results written for window {w}.")
-
-        all_results.append(aggregated_df)
-
-    final_df = pd.concat(all_results, ignore_index=True)
-    log("Pipeline finished successfully.")
-    return final_df
+        generate_windows(geneA_path, w, step, win_fa_
