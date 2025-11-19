@@ -72,4 +72,4 @@ def run_pipeline(
 
         # 1️⃣ Generate sliding windows
         win_fa = Path(f"tmp_windows_w{w}.fa")
-        generate_windows(geneA_path, w, step, win_fa_
+        generate_windows(geneA_path, w, step, win_fa)
