@@ -1,8 +1,14 @@
 import os
 from pathlib import Path
 import pandas as pd
+from pipeline import (
+    generate_windows,
+    call_intarna_fast,     # use IntaRNA for fast scan
+    extract_contexts,
+    call_intarna,
+    aggregate_and_rank,
+)
 from Bio import SeqIO
-from pipeline import generate_windows, call_vienna_fast, extract_contexts, call_intarna, aggregate_and_rank
 
 def run_pipeline(
     geneA_path,
@@ -13,13 +19,12 @@ def run_pipeline(
     energy_cutoff_fast=-6.0,
     top_k_per_window=100,
     threads=1,
-    vienna_bin=None,
     intarna_bin=None,
     log_callback=None,
 ):
     """
-    Run the full RNA-RNA sliding-window pipeline using ViennaRNA for the fast screen
-    and IntaRNA for rescoring.
+    Run the RNA-RNA sliding-window pipeline using IntaRNA
+    for both fast scanning and full rescoring.
     """
 
     def log(msg):
@@ -28,9 +33,6 @@ def run_pipeline(
         else:
             print(msg)
 
-    # Set default binary paths
-    if vienna_bin is None:
-        vienna_bin = os.path.join(os.path.dirname(__file__), "RNAduplex")
     if intarna_bin is None:
         intarna_bin = os.path.join(os.path.dirname(__file__), "IntaRNA")
 
@@ -39,18 +41,19 @@ def run_pipeline(
     for w in window_sizes:
         log(f"=== Window size {w} ===")
 
-        # 1️⃣ Generate sliding windows for geneA
+        # 1️⃣ Generate sliding windows
         win_fa = Path(f"tmp_windows_w{w}.fa")
         generate_windows(geneA_path, w, step, win_fa)
         log(f"Generated {len(list(SeqIO.parse(win_fa, 'fasta')))} windows for geneA.")
 
-        # 2️⃣ Fast ViennaRNA search
-        vienna_out = Path(f"tmp_vienna_w{w}.tsv")
-        call_vienna_fast(win_fa, geneB_path, vienna_out, energy_cutoff=energy_cutoff_fast, vienna_bin=vienna_bin)
-        log(f"ViennaRNA fast screen done. Output: {vienna_out}")
+        # 2️⃣ Fast search with IntaRNA
+        fast_out = Path(f"tmp_intarna_fast_w{w}.tsv")
+        call_intarna_fast(win_fa, geneB_path, fast_out, energy_cutoff=energy_cutoff_fast,
+                          threads=threads, intarna_bin=intarna_bin)
+        log(f"IntaRNA fast scan completed. Output: {fast_out}")
 
         # 3️⃣ Parse hits and select top K per query
-        hits_df = pd.read_csv(vienna_out, sep="\t", comment="#")
+        hits_df = pd.read_csv(fast_out, sep="\t", comment="#")
         hits_df = hits_df.sort_values("energy").groupby("query_id").head(top_k_per_window).reset_index(drop=True)
         log(f"Selected top {top_k_per_window} hits per query.")
 
@@ -66,7 +69,7 @@ def run_pipeline(
             qid = hits_df.loc[int(row["hit_index"]), "query_id"]
             tmp_query_fa = contexts_dir / f"tmp_query_{qid}.fa"
 
-            # Extract query sequence
+            # extract query sequence
             for rec in SeqIO.parse(win_fa, "fasta"):
                 if rec.id == qid:
                     with open(tmp_query_fa, "w") as fh:
@@ -74,7 +77,8 @@ def run_pipeline(
                     break
 
             out_pref = contexts_dir / f"intarna_{idx}"
-            csv_file = call_intarna(tmp_query_fa, row["context_fasta"], out_pref, threads=threads, intarna_bin=intarna_bin)
+            csv_file = call_intarna(tmp_query_fa, row["context_fasta"], out_pref,
+                                    threads=threads, intarna_bin=intarna_bin)
             intarna_results.append((int(row["hit_index"]), csv_file))
             log(f"IntaRNA rescoring done for hit {idx}")
 
@@ -85,10 +89,6 @@ def run_pipeline(
         log(f"Aggregated results written for window {w}.")
         all_results.append(aggregated_df)
 
-    # 7️⃣ Return combined results
-    if all_results:
-        final_df = pd.concat(all_results, ignore_index=True)
-    else:
-        final_df = pd.DataFrame()
+    final_df = pd.concat(all_results, ignore_index=True)
     log("Pipeline finished successfully.")
     return final_df
