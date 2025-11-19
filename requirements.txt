@@ -3,3 +3,5 @@ biopython
 pandas
 pyyaml
 tqdm
+openpyxl
+
