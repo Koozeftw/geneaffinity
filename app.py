@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import tempfile
 from datetime import datetime
-from pipeline_runner import run_pipeline  # updated runner with local binaries
+from pipeline_runner import run_pipeline  # updated runner with IntaRNA only
 
 # --- Streamlit page config ---
 st.set_page_config(page_title="FASTA Binding Pipeline", layout="wide")
@@ -39,10 +39,8 @@ if st.button("Run Pipeline"):
             st.info("Running pipeline...")
             log_window = st.empty()  # live log placeholder
 
-            # Define local binaries
-            vienna_bin = "/Users/colekuznitz/miniforge3/bin/RNAduplex"
+            # Define IntaRNA binary path
             intarna_bin = "/Users/colekuznitz/miniforge3/bin/IntaRNA"
-
 
             # Run pipeline
             try:
@@ -55,9 +53,8 @@ if st.button("Run Pipeline"):
                     energy_cutoff_fast=energy_cutoff_fast,
                     top_k_per_window=top_k,
                     threads=threads,
-                    vienna_bin=vienna_bin,
                     intarna_bin=intarna_bin,
-                    log_callback=lambda msg: log_window.text(msg)  # live logging
+                    log_callback=lambda msg: log_window.text(msg)
                 )
 
                 st.success("Pipeline finished!")
@@ -72,13 +69,16 @@ if st.button("Run Pipeline"):
                 )
 
                 # Download results as Excel
-                excel_data = results_df.to_excel(index=False, engine="openpyxl")
-                st.download_button(
-                    label="⬇️ Download Results Excel",
-                    data=excel_data,
-                    file_name=f"aggregated_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                try:
+                    excel_data = results_df.to_excel(index=False, engine="openpyxl")
+                    st.download_button(
+                        label="⬇️ Download Results Excel",
+                        data=excel_data,
+                        file_name=f"aggregated_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.warning(f"Could not generate Excel file: {e}")
 
             except Exception as e:
                 st.error(f"Pipeline failed: {e}")
