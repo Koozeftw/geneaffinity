@@ -1,2 +1,12 @@
+git
+build-essential
+cmake
+autoconf
+automake
+libtool
+pkg-config
 zlib1g-dev
+libgsl-dev
+python3-dev
+
 
