@@ -5,11 +5,15 @@ from datetime import datetime
 from pipeline_runner import run_pipeline  # pure Python version
 import pandas as pd
 import plotly.express as px
+from Bio import SeqIO
 
 # --- Streamlit page config ---
 st.set_page_config(page_title="FASTA Binding Pipeline", layout="wide")
 st.title("FASTA Binding Pipeline 🔬")
-st.write("Upload two FASTA sequences and run a fully self-contained Python pipeline to find potential binding regions.")
+st.write(
+    "Upload two FASTA sequences and run a fully self-contained Python pipeline "
+    "to find potential binding regions."
+)
 
 # --- File uploads ---
 fileA = st.file_uploader("Upload Sequence A (FASTA)", type=["fa", "fasta"])
@@ -21,9 +25,7 @@ window = st.sidebar.number_input("Window Size", min_value=1, value=35)
 step = st.sidebar.number_input("Step Size", min_value=1, value=5)
 flank = st.sidebar.number_input("Flank Size", min_value=0, value=100)
 energy_cutoff_fast = st.sidebar.number_input(
-    "Fast Scan: Minimum Complementarity Score",
-    value=-6.0,
-    format="%.2f"
+    "Fast Scan: Minimum Complementarity Score", value=-6.0, format="%.2f"
 )
 top_k = st.sidebar.number_input("Top Hits per Window to Keep", min_value=1, value=100)
 
@@ -35,9 +37,7 @@ mode = st.sidebar.radio(
 topN_C = None
 if mode.startswith("C"):
     topN_C = st.sidebar.number_input(
-        "Re-run full thermodynamics for top N hits",
-        min_value=1,
-        value=20
+        "Re-run full thermodynamics for top N hits", min_value=1, value=20
     )
 
 # --- Run button ---
@@ -72,9 +72,26 @@ if st.button("Run Pipeline"):
                     log_callback=lambda msg: log_window.text(msg)
                 )
 
+                # --- Add actual sequences for each hit ---
+                seqA_dict = {rec.id: str(rec.seq) for rec in SeqIO.parse(pathA, "fasta")}
+                seqB_dict = {rec.id: str(rec.seq) for rec in SeqIO.parse(pathB, "fasta")}
+
+                results_df['query_seq'] = results_df.apply(
+                    lambda row: seqA_dict.get(row['query_id'].split('|')[0], "")[
+                        row['q_start_B']-1 : row['q_end_B']
+                    ],
+                    axis=1
+                )
+                results_df['target_seq'] = results_df.apply(
+                    lambda row: seqB_dict.get(row['target_id'], "")[
+                        row['t_start_B']-1 : row['t_end_B']
+                    ],
+                    axis=1
+                )
+
                 st.success("Pipeline finished! ✔️")
 
-                # Display dataframe
+                # Display resulting dataframe
                 st.dataframe(results_df)
 
                 # --- CSV download ---
@@ -108,7 +125,7 @@ if st.button("Run Pipeline"):
 
                 # Hover labels
                 top_df['label'] = top_df.apply(
-                    lambda row: f"Query: {row['query_id']}<br>Target: {row['target_id']}<br>Energy: {row['rescore_energy_B']}<br>Q: {row['q_start_B']}-{row['q_end_B']} T: {row['t_start_B']}-{row['t_end_B']}",
+                    lambda row: f"Query: {row['query_id']}<br>Target: {row['target_id']}<br>Energy: {row['rescore_energy_B']}<br>Q: {row['q_start_B']}-{row['q_end_B']} T: {row['t_start_B']}-{row['t_end_B']}<br>Query seq: {row['query_seq']}<br>Target seq: {row['target_seq']}",
                     axis=1
                 )
 
