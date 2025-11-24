@@ -2,12 +2,12 @@ import streamlit as st
 import os
 import tempfile
 from datetime import datetime
-from pipeline_runner import run_pipeline  # updated runner with IntaRNA only
+from pipeline_runner import run_pipeline  # pure Python version
 
 # --- Streamlit page config ---
 st.set_page_config(page_title="FASTA Binding Pipeline", layout="wide")
 st.title("FASTA Binding Pipeline 🔬")
-st.write("Upload your sequences and run the pipeline to find potential binding regions.")
+st.write("Upload two FASTA sequences and run a fully self-contained Python pipeline to find potential binding regions.")
 
 # --- File uploads ---
 fileA = st.file_uploader("Upload Sequence A (FASTA)", type=["fa", "fasta"])
@@ -15,12 +15,33 @@ fileB = st.file_uploader("Upload Sequence B (FASTA)", type=["fa", "fasta"])
 
 # --- Pipeline parameters ---
 st.sidebar.header("Pipeline Parameters")
+
 window = st.sidebar.number_input("Window Size", min_value=1, value=35)
 step = st.sidebar.number_input("Step Size", min_value=1, value=5)
 flank = st.sidebar.number_input("Flank Size", min_value=0, value=100)
-energy_cutoff_fast = st.sidebar.number_input("Energy Cutoff (Fast)", value=-6.0, format="%.2f")
-top_k = st.sidebar.number_input("Top Hits per Query", min_value=1, value=100)
-threads = st.sidebar.number_input("Threads", min_value=1, value=1)
+
+energy_cutoff_fast = st.sidebar.number_input(
+    "Fast Scan: Minimum Complementarity Score",
+    value=-6.0,
+    format="%.2f"
+)
+
+top_k = st.sidebar.number_input("Top Hits per Window to Keep", min_value=1, value=100)
+
+# Mode B or C
+mode = st.sidebar.radio(
+    "Thermodynamic Mode",
+    ["B (fast, simplified thermodynamics)", "C (full thermodynamics after B)"]
+)
+
+# If user selects Mode C, let them choose top N
+topN_C = None
+if mode.startswith("C"):
+    topN_C = st.sidebar.number_input(
+        "Re-run full thermodynamics for top N hits",
+        min_value=1,
+        value=20
+    )
 
 # --- Run button ---
 if st.button("Run Pipeline"):
@@ -36,14 +57,11 @@ if st.button("Run Pipeline"):
             with open(pathB, "wb") as f:
                 f.write(fileB.getbuffer())
 
-            st.info("Running pipeline...")
-            log_window = st.empty()  # live log placeholder
+            st.info("Running pipeline… this may take a moment.")
+            log_window = st.empty()  # live logs will appear here
 
-            # Define IntaRNA binary path
-            intarna_bin = "/Users/colekuznitz/miniforge3/bin/IntaRNA"
-
-            # Run pipeline
             try:
+                # Run pipeline
                 results_df = run_pipeline(
                     geneA_path=pathA,
                     geneB_path=pathB,
@@ -52,29 +70,36 @@ if st.button("Run Pipeline"):
                     flank=flank,
                     energy_cutoff_fast=energy_cutoff_fast,
                     top_k_per_window=top_k,
-                    threads=threads,
-                    intarna_bin=intarna_bin,
+                    thermo_mode="B" if mode.startswith("B") else "C",
+                    topN_modeC=topN_C,
                     log_callback=lambda msg: log_window.text(msg)
                 )
 
-                st.success("Pipeline finished!")
+                st.success("Pipeline finished! ✔️")
 
-                # Download results as CSV
+                # Display resulting dataframe
+                st.dataframe(results_df)
+
+                # CSV download
                 csv_data = results_df.to_csv(index=False)
                 st.download_button(
-                    label="⬇️ Download Results CSV",
+                    label="⬇️ Download Results as CSV",
                     data=csv_data,
-                    file_name=f"aggregated_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv"
                 )
 
-                # Download results as Excel
+                # Excel download
                 try:
-                    excel_data = results_df.to_excel(index=False, engine="openpyxl")
+                    import io
+                    import pandas as pd
+
+                    excel_buffer = io.BytesIO()
+                    results_df.to_excel(excel_buffer, index=False, engine="openpyxl")
                     st.download_button(
-                        label="⬇️ Download Results Excel",
-                        data=excel_data,
-                        file_name=f"aggregated_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        label="⬇️ Download Results as Excel",
+                        data=excel_buffer.getvalue(),
+                        file_name=f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 except Exception as e:
