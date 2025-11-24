@@ -64,9 +64,13 @@ def score_candidates(df_queries, seqA_dict, seqB_dict, log_callback=None, flank=
     log(f"Scoring {len(df_queries)} query windows against {len(seqB_dict)} target sequences...", log_callback)
 
     for idx, row in df_queries.iterrows():
-        query_seq_full = seqA_dict[row['seq_id']]
-        q_start = max(0, row['q_start'] - 1 - flank)  # 0-based start including flank
-        q_end = min(len(query_seq_full), row['q_end'] + flank)  # end with flank
+        # Extract original sequence ID from query_id
+        original_seq_id = row['query_id'].split('|')[0]
+        query_seq_full = seqA_dict[original_seq_id]
+
+        # Include flanking positions if requested
+        q_start = max(0, row['q_start'] - 1 - flank)
+        q_end = min(len(query_seq_full), row['q_end'] + flank)
         query_seq = query_seq_full[q_start:q_end]
 
         for tid, target_seq_full in seqB_dict.items():
@@ -78,7 +82,6 @@ def score_candidates(df_queries, seqA_dict, seqB_dict, log_callback=None, flank=
                 score = simple_complementarity_score(query_seq, target_seq)
                 rows.append({
                     'query_id': row['query_id'],
-                    'seq_id': row['seq_id'],
                     'target_id': tid,
                     'q_start': row['q_start'],
                     'q_end': row['q_end'],
