@@ -1,9 +1,9 @@
 streamlit>=1.20
-biopython>=1.80
-pandas>=2.0
-pyyaml>=6.0
-tqdm>=4.65
-openpyxl>=3.1
+biopython
+pandas
+pyyaml
+tqdm
+openpyxl
 plotly
 
 
