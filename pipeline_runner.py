@@ -1,94 +1,221 @@
-import os
+# pipeline_runner.py
+"""
+pipeline_runner.py
+
+High-level runner that orchestrates the pure-Python pipeline (Option B default,
+optional Mode C re-evaluation). Designed to be called from Streamlit app.py.
+
+Expected functions to exist in pipeline.py:
+  - generate_windows(fasta_path, window, step, out_fa)
+  - fast_scan_all(query_fa, target_fa, seed_len=..., min_seed_hits=..., ...)
+  - rescore_candidates(candidates, query_fa, target_fa, mode='B', top_n_for_C=20)
+  - read_fasta_to_dict(path)
+  - write_fasta(records, path)      (optional convenience)
+  - write_candidates_tsv(candidates, out_tsv)  (optional)
+  - write_rescored_csv(results, out_csv)      (optional)
+
+This runner focuses on wiring those pieces together and returning a pandas DataFrame.
+"""
+
 from pathlib import Path
+import tempfile
+import os
 import pandas as pd
+import csv
+from typing import List, Dict, Optional
+
+# Import pure-Python pipeline functions
 from pipeline import (
     generate_windows,
-    call_intarna_fast,     # use IntaRNA for fast scan
-    extract_contexts,
-    call_intarna,
-    aggregate_and_rank,
+    fast_scan_all,
+    rescore_candidates,
+    read_fasta_to_dict,
+    write_fasta,
+    write_candidates_tsv,
+    write_rescored_csv,
 )
-from Bio import SeqIO
+
+def _log_maybe(callback, msg: str):
+    if callback:
+        try:
+            callback(msg)
+        except Exception:
+            # fail silently for logging errors
+            print("[logger error]", msg)
+    else:
+        print(msg)
+
+def _select_top_k_per_query(candidates: List[Dict], k: int) -> List[Dict]:
+    """
+    candidates: list of dicts with 'query_id', 'target_id', and 'approx_energy' (or similar)
+    returns filtered list keeping at most k candidates per query_id (best approx_energy)
+    """
+    if k is None or k <= 0:
+        return candidates
+    # group by query_id
+    grouped = {}
+    for c in candidates:
+        q = c.get('query_id')
+        grouped.setdefault(q, []).append(c)
+    out = []
+    for q, lst in grouped.items():
+        # sort by approx_energy (more negative/better first). Fallback to 0 if not present.
+        lst_sorted = sorted(lst, key=lambda x: x.get('approx_energy', 0.0))
+        out.extend(lst_sorted[:k])
+    return out
 
 def run_pipeline(
-    geneA_path,
-    geneB_path,
-    window_sizes=[35],
-    step=5,
-    flank=100,
-    energy_cutoff_fast=-6.0,
-    top_k_per_window=100,
-    threads=1,
-    intarna_bin=None,
-    log_callback=None,
-):
+    geneA_path: str,
+    geneB_path: str,
+    window_sizes: List[int] = [35],
+    step: int = 5,
+    flank: int = 100,
+    energy_cutoff_fast: float = -6.0,
+    top_k_per_window: int = 100,
+    threads: int = 1,                # placeholder — threading not implemented in this runner
+    thermo_mode: str = "B",          # "B" or "C"
+    topN_modeC: int = 20,            # when thermo_mode == "C", re-evaluate top N from B with Mode C
+    seed_len: int = 8,
+    min_seed_hits: int = 1,
+    max_hits_per_query: Optional[int] = None,
+    log_callback=None
+) -> pd.DataFrame:
     """
-    Run the RNA-RNA sliding-window pipeline using IntaRNA
-    for both fast scanning and full rescoring.
+    High-level runner.
+
+    Parameters
+    ----------
+    geneA_path : path to FASTA for gene A (will be windowed)
+    geneB_path : path to FASTA for gene B (targets to scan against)
+    window_sizes : list of window sizes to generate from geneA
+    step : sliding-window step
+    flank : (unused here for rescoring) kept for API compatibility
+    energy_cutoff_fast : approximate energy threshold for including candidate seeds
+    top_k_per_window : keep top-K candidates per query after fast scan
+    thermo_mode : 'B' (default) or 'C' (run B, then re-evaluate topN with C)
+    topN_modeC : number of top-B hits to re-evaluate with Mode C
+    seed_len, min_seed_hits, max_hits_per_query : pass-through to fast scan
+    log_callback : optional function to receive log messages (str)
     """
-
-    def log(msg):
-        if log_callback:
-            log_callback(msg)
-        else:
-            print(msg)
-
-    if intarna_bin is None:
-        intarna_bin = "/Users/colekuznitz/miniforge3/bin/IntaRNA"
-
+    _log_maybe(log_callback, "Starting pipeline (pure-Python mode).")
     all_results = []
 
-    for w in window_sizes:
-        log(f"=== Window size {w} ===")
+    # Make a small temporary working directory so intermediate files don't clutter repo
+    with tempfile.TemporaryDirectory() as workdir:
+        workdir = Path(workdir)
+        _log_maybe(log_callback, f"Working directory: {workdir}")
 
-        # 1️⃣ Generate sliding windows
-        win_fa = Path(f"tmp_windows_w{w}.fa")
-        generate_windows(geneA_path, w, step, win_fa)
-        log(f"Generated {len(list(SeqIO.parse(win_fa, 'fasta')))} windows for geneA.")
+        # Ensure input files exist
+        geneA_path = Path(geneA_path)
+        geneB_path = Path(geneB_path)
+        if not geneA_path.exists():
+            raise FileNotFoundError(f"geneA_path not found: {geneA_path}")
+        if not geneB_path.exists():
+            raise FileNotFoundError(f"geneB_path not found: {geneB_path}")
 
-        # 2️⃣ Fast search with IntaRNA
-        fast_out = Path(f"tmp_intarna_fast_w{w}.tsv")
-        call_intarna_fast(win_fa, geneB_path, fast_out, energy_cutoff=energy_cutoff_fast,
-                          threads=threads, intarna_bin=intarna_bin)
-        log(f"IntaRNA fast scan completed. Output: {fast_out}")
+        # Load gene B sequences once (used by rescoring)
+        _log_maybe(log_callback, "Reading target FASTA (geneB)...")
+        targets_dict = read_fasta_to_dict(str(geneB_path))
 
-        # 3️⃣ Parse hits and select top K per query
-        hits_df = pd.read_csv(fast_out, sep="\t", comment="#")
-        hits_df = hits_df.sort_values("energy").groupby("query_id").head(top_k_per_window).reset_index(drop=True)
-        log(f"Selected top {top_k_per_window} hits per query.")
+        for w in window_sizes:
+            _log_maybe(log_callback, f"=== Window size {w} ===")
 
-        # 4️⃣ Extract contexts with flanking regions
-        contexts_dir = Path(f"tmp_contexts_w{w}")
-        contexts_dir.mkdir(parents=True, exist_ok=True)
-        contexts_df = extract_contexts(geneB_path, hits_df, flank, contexts_dir)
-        log(f"Extracted {len(contexts_df)} context sequences with flank={flank}.")
+            # 1) Generate windows from geneA
+            windows_fa = workdir / f"windows_w{w}.fa"
+            _log_maybe(log_callback, f"Generating windows (window={w}, step={step})...")
+            generate_windows(str(geneA_path), w, step, str(windows_fa))
 
-        # 5️⃣ Rescore with IntaRNA
-        intarna_results = []
-        for idx, row in contexts_df.iterrows():
-            qid = hits_df.loc[int(row["hit_index"]), "query_id"]
-            tmp_query_fa = contexts_dir / f"tmp_query_{qid}.fa"
+            # Read how many windows created
+            windows = read_fasta_to_dict(str(windows_fa))
+            n_windows = len(windows)
+            _log_maybe(log_callback, f"Generated {n_windows} windows (saved to {windows_fa}).")
 
-            # extract query sequence
-            for rec in SeqIO.parse(win_fa, "fasta"):
-                if rec.id == qid:
-                    with open(tmp_query_fa, "w") as fh:
-                        fh.write(f">{rec.id}\n{str(rec.seq)}\n")
-                    break
+            # 2) Fast seed-based scan (Option B fast stage)
+            _log_maybe(log_callback, f"Running fast seed scan (seed_len={seed_len})...")
+            candidates = fast_scan_all(
+                query_fa=str(windows_fa),
+                target_fa=str(geneB_path),
+                seed_len=seed_len,
+                min_seed_hits=min_seed_hits,
+                max_hits_per_query=max_hits_per_query,
+                approx_score_threshold=energy_cutoff_fast
+            )
 
-            out_pref = contexts_dir / f"intarna_{idx}"
-            csv_file = call_intarna(tmp_query_fa, row["context_fasta"], out_pref,
-                                    threads=threads, intarna_bin=intarna_bin)
-            intarna_results.append((int(row["hit_index"]), csv_file))
-            log(f"IntaRNA rescoring done for hit {idx}")
+            _log_maybe(log_callback, f"Fast scan found {len(candidates)} candidate hits before filtering.")
 
-            tmp_query_fa.unlink(missing_ok=True)
+            # 3) Keep top_k_per_window per query
+            filtered = _select_top_k_per_query(candidates, top_k_per_window)
+            _log_maybe(log_callback, f"Filtered to {len(filtered)} candidates after keeping top {top_k_per_window} per query.")
 
-        # 6️⃣ Aggregate & rank results
-        aggregated_df = aggregate_and_rank(intarna_results, hits_df, contexts_dir / f"aggregated_w{w}.csv")
-        log(f"Aggregated results written for window {w}.")
-        all_results.append(aggregated_df)
+            # Optional: write candidates TSV for inspection (in workdir)
+            cand_tsv = workdir / f"candidates_w{w}.tsv"
+            try:
+                write_candidates_tsv(filtered, str(cand_tsv))
+                _log_maybe(log_callback, f"Wrote candidate TSV to {cand_tsv}")
+            except Exception:
+                # If write helper not present or fails, write a minimal TSV
+                _log_maybe(log_callback, "Falling back to manual candidate TSV writer.")
+                if filtered:
+                    keys = sorted(filtered[0].keys())
+                    with open(cand_tsv, 'w', newline='') as fh:
+                        writer = csv.DictWriter(fh, fieldnames=keys, delimiter='\t')
+                        writer.writeheader()
+                        for r in filtered:
+                            writer.writerow({k: r.get(k, '') for k in keys})
+                    _log_maybe(log_callback, f"Wrote candidate TSV to {cand_tsv}")
 
-    final_df = pd.concat(all_results, ignore_index=True)
-    log("Pipeline finished successfully.")
-    return final_df
+            # 4) Rescore with Mode B (moderate DP) for all filtered candidates
+            _log_maybe(log_callback, "Rescoring all candidates with Mode B (moderate DP)...")
+            rescored_results = rescore_candidates(
+                filtered,
+                query_fa=str(windows_fa),
+                target_fa=str(geneB_path),
+                mode='B',
+                top_n_for_C=topN_modeC
+            )
+            _log_maybe(log_callback, f"Mode B rescoring completed for {len(rescored_results)} candidates.")
+
+            # 5) If thermo_mode == 'C', do Mode C on top-N results (rescore_candidates can embed C but we will handle merging)
+            if thermo_mode.upper() == 'C':
+                _log_maybe(log_callback, f"Mode C requested: re-evaluating top {topN_modeC} hits from Mode B with higher-accuracy DP...")
+                # rescore_candidates already supports mode='C' and will annotate top-N; if it didn't, we could call affine_gap separately.
+                # For safety, call rescore_candidates again with mode='C' so that 'rescore_energy_C' fields are present.
+                rescored_results = rescore_candidates(
+                    filtered,
+                    query_fa=str(windows_fa),
+                    target_fa=str(geneB_path),
+                    mode='C',
+                    top_n_for_C=topN_modeC
+                )
+                _log_maybe(log_callback, "Mode C re-evaluation completed.")
+
+            # 6) Convert rescored_results (list of dict) into pandas DataFrame
+            if rescored_results:
+                df = pd.DataFrame(rescored_results)
+            else:
+                df = pd.DataFrame(columns=[
+                    "query_id","target_id","q_pos","t_pos","approx_energy",
+                    "rescore_energy_B","q_start_B","q_end_B","t_start_B","t_end_B",
+                    "rescore_energy_C","q_start_C","q_end_C","t_start_C","t_end_C"
+                ])
+
+            # Save a CSV of rescored results for this window size
+            out_csv = workdir / f"rescored_w{w}.csv"
+            try:
+                write_rescored_csv(rescored_results, str(out_csv))
+                _log_maybe(log_callback, f"Wrote rescored CSV to {out_csv}")
+            except Exception:
+                # fallback to pandas to write
+                df.to_csv(out_csv, index=False)
+                _log_maybe(log_callback, f"Wrote rescored CSV to {out_csv} (pandas fallback)")
+
+            all_results.append(df)
+
+        # 7) concatenate across window sizes
+        if all_results:
+            final_df = pd.concat(all_results, ignore_index=True, sort=False)
+        else:
+            final_df = pd.DataFrame()
+
+        _log_maybe(log_callback, "Pipeline finished successfully.")
+        return final_df
