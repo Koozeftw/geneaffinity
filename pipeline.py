@@ -33,15 +33,15 @@ def generate_windows(fasta_path, window, step, log_callback=None):
     log(f"Generating windows of size {window}, step {step}", log_callback)
     for rid, seq in seqs.items():
         L = len(seq)
-        for start in range(0, max(1, L - window + 1), step):
+        for start in range(0, len(seq) - window + 1, step):
             end = start + window
             wid = f"{rid}|{start+1}-{end}"  # 1-based coordinates
             records.append({
-                'query_id': wid,
-                'seq_id': rid,
-                'q_start': start + 1,
-                'q_end': end
-            })
+        'query_id': wid,
+        'sequence': seq[start:end],
+        'q_start': start + 1,
+        'q_end': end
+    })
     log(f"Generated {len(records)} windows across {len(seqs)} sequences", log_callback)
     return pd.DataFrame(records)
 
