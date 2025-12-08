@@ -12,9 +12,21 @@ This is a Streamlit web app to find potential RNA-RNA binding regions using a sl
 - Runs fast candidate search (RiSearch2) and rescoring (IntaRNA)
 - Outputs aggregated results in CSV format
 
+## Design
+Input sequences
+   ↓
+Encode / hash windows (fast)
+   ↓
+Candidate binding regions
+   ↓
+Deep nucleotide-level analysis (slow but rare)
+   ↓
+Scored binding sites
+
 ## Installation
 1. Install Python 3.9+  
 2. Install dependencies:
+
 
 ```bash
 pip install -r requirements.txt
